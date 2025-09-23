@@ -51,7 +51,7 @@ class VectorStore:
         )
     
     def search(self, query_embedding: List[float], n_results: int = None, 
-              include: List[str] = None):
+              include: List[str] = None, router_id: str = None):
         """Search for similar documents"""
         if n_results is None:
             n_results = Config.DEFAULT_SEARCH_LIMIT
@@ -62,11 +62,17 @@ class VectorStore:
         if include is None:
             include = ["documents", "metadatas", "distances"]
         
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            include=include
-        )
+        query_params = {
+            "query_embeddings": [query_embedding],
+            "n_results": n_results,
+            "include": include
+        }
+        
+        # Add router filtering if specified
+        if router_id:
+            query_params["where"] = {"router_id": router_id}
+        
+        results = self.collection.query(**query_params)
         return results
     
     def delete_by_file(self, file_path: str):

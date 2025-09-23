@@ -173,10 +173,12 @@ def format_file_size(bytes_size: int) -> str:
 # Pydantic models
 class FolderRequest(BaseModel):
     folder_path: str
+    router_id: Optional[str] = None  # Manual router context input
 
 class SearchRequest(BaseModel):
     query: str
     limit: int = Config.DEFAULT_SEARCH_LIMIT
+    router_id: Optional[str] = None  # Optional router filtering
 
 class SearchPathsRequest(BaseModel):
     query: str
@@ -189,6 +191,7 @@ class FileStructureRequest(BaseModel):
 class CheckboxUpdate(BaseModel):
     paths: List[str]
     checked: bool
+    router_id: Optional[str] = None  # Router context for document tagging
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -203,7 +206,7 @@ async def root():
 async def add_folder(request: FolderRequest):
     """Add a folder to be watched and indexed"""
     try:
-        await file_watcher.add_watch_folder(request.folder_path)
+        await file_watcher.add_watch_folder(request.folder_path, request.router_id)
         return {"status": "success", "message": f"Added {request.folder_path} to watch list"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -224,7 +227,8 @@ async def search_documents(request: SearchRequest):
         results = vector_store.search(
             query_embedding=query_embedding,
             n_results=request.limit,
-            include=["documents", "metadatas", "distances"]
+            include=["documents", "metadatas", "distances"],
+            router_id=request.router_id
         )
         
         return {
@@ -335,7 +339,7 @@ async def update_folder_selection(request: CheckboxUpdate):
             # Add folders and files to watch list
             for path in valid_paths:
                 if os.path.isdir(path):
-                    await file_watcher.add_watch_folder(path)
+                    await file_watcher.add_watch_folder(path, request.router_id)
                 elif os.path.isfile(path) and doc_processor.is_supported(path):
                     await file_watcher.add_watch_file(path)
         else:

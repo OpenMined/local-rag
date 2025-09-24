@@ -220,6 +220,13 @@ async def get_watched_folders():
 async def search_documents(request: SearchRequest):
     """Search for similar documents"""
     try:
+        # Check if router_id is provided
+        if not request.router_id:
+            raise HTTPException(
+                status_code=400,
+                detail="router_id is required. Please specify a router context for the search."
+            )
+        
         # Generate query embedding
         query_embedding = embedding_gen.embed_text(request.query)
         
@@ -245,7 +252,7 @@ async def search_document_paths(request: SearchPathsRequest):
         # Generate query embedding
         query_embedding = embedding_gen.embed_text(request.query)
         
-        # Search vector store
+        # Search vector store (no router_id for path search - returns all)
         results = vector_store.search(
             query_embedding=query_embedding,
             n_results=request.limit,

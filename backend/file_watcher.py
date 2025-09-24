@@ -633,9 +633,17 @@ class FileWatcher:
     def get_router_id_for_file(self, file_path: str) -> str:
         """Get router_id for a file based on its parent folder mapping"""
         # Check for folder-level router_id mapping
+        file_path_norm = os.path.normpath(file_path)
         for folder_path, router_id in self.folder_router_mapping.items():
-            if file_path.startswith(folder_path + "/") or file_path.startswith(folder_path + os.sep):
-                return router_id
+            folder_path_norm = os.path.normpath(folder_path)
+            # Check if file_path is inside folder_path
+            try:
+                common = os.path.commonpath([file_path_norm, folder_path_norm])
+                if common == folder_path_norm:
+                    return router_id
+            except ValueError:
+                # If paths are on different drives (Windows), skip
+                continue
         
         # No fallback - all files must have explicit router_id via folder mapping
         raise ValueError(

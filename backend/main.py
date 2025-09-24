@@ -119,7 +119,7 @@ def build_file_tree(path: str, expand_folders: bool = True, max_depth: int = 3, 
                     size_info = format_file_size(size_bytes)
                 
                 # Create item object
-                item = {
+                item: Dict[str, Any] = {
                     "name": item_name,
                     "path": item_path,
                     "type": "folder" if is_dir else "file",
@@ -177,8 +177,8 @@ class FolderRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
+    router_id: str 
     limit: int = Config.DEFAULT_SEARCH_LIMIT
-    router_id: Optional[str] = None  # Optional router filtering
 
 class SearchPathsRequest(BaseModel):
     query: str
@@ -221,10 +221,10 @@ async def search_documents(request: SearchRequest):
     """Search for similar documents"""
     try:
         # Check if router_id is provided
-        if not request.router_id:
+        if not request.router_id or request.router_id == '':
             raise HTTPException(
                 status_code=400,
-                detail="router_id is required. Please specify a router context for the search."
+                detail="router_id is required and can't be empty. Please specify a router context for the search."
             )
         
         # Generate query embedding
@@ -292,7 +292,7 @@ async def remove_watched_folder(folder_path: str):
     """Remove a folder from the watch list"""
     try:
         # Use the FileWatcher's remove method which handles persistence
-        file_watcher.remove_watch_path(folder_path)
+        await file_watcher.remove_watch_path(folder_path)
         return {"status": "success", "message": f"Removed {folder_path} from watch list"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -364,7 +364,7 @@ async def update_folder_selection(request: CheckboxUpdate):
 
 def format_search_results(results):
     """Format search results for frontend"""
-    formatted = []
+    formatted: List[Dict[str, Any]] = []
     if not results['documents'] or not results['documents'][0]:
         return formatted
         

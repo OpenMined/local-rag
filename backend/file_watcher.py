@@ -2,7 +2,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import os
 import asyncio
-from typing import Set, List, Dict, Any
+from typing import Set, List, Dict, Any, Optional
 from datetime import datetime
 from .config import Config
 import uuid
@@ -19,12 +19,12 @@ class IndexingOperation:
         self.total_size_mb = sum(size for _, size in files)
         self.processed_size_mb = 0
         self.status = "pending"  # pending, active, completed, error
-        self.current_file = None
+        self.current_file: Optional[str] = None
         self.current_file_progress = 0.0  # Progress of current file (0.0 to 1.0)
         self.current_file_chunks_total = 0
         self.current_file_chunks_processed = 0
-        self.start_time = None
-        self.end_time = None
+        self.start_time: Optional[datetime] = None
+        self.end_time: Optional[datetime] = None
         
     def get_overall_progress(self) -> float:
         """Get overall progress as percentage (0.0 to 1.0)"""
@@ -50,7 +50,6 @@ class IndexingOperation:
         self.current_file_progress = 0.0
         self.current_file_chunks_total = 0
         self.current_file_chunks_processed = 0
-        self.current_file = None
 
 class GlobalIndexingManager:
     """Manages all indexing operations globally"""
@@ -60,9 +59,9 @@ class GlobalIndexingManager:
         self.embedding_gen = embedding_gen
         self.file_watcher = file_watcher
         self.operations: Dict[str, IndexingOperation] = {}
-        self.operation_queue = asyncio.Queue()
+        self.operation_queue: asyncio.Queue[str] = asyncio.Queue()
         self.is_processing = False
-        self.global_status = {
+        self.global_status: Dict[str, Any] = {
             "isRunning": False,
             "operations": [],
             "totalOperations": 0,
@@ -260,7 +259,7 @@ class GlobalIndexingManager:
         
         # Get current file info for display
         current_file = None
-        current_file_progress = 0
+        current_file_progress = 0.0
         current_file_chunks = {"processed": 0, "total": 0}
         
         for op in active_ops:
@@ -326,7 +325,7 @@ class GlobalIndexingManager:
     def cleanup_completed_operations(self, max_age_hours: int = 24):
         """Clean up old completed operations"""
         cutoff_time = datetime.now().timestamp() - (max_age_hours * 3600)
-        to_remove = []
+        to_remove: List[str] = []
         
         for op_id, operation in self.operations.items():
             if (operation.status in ["completed", "error"] and 
@@ -345,7 +344,7 @@ class DocumentFileHandler(FileSystemEventHandler):
         self.vector_store = vector_store
         self.doc_processor = doc_processor
         self.embedding_gen = embedding_gen
-        self.processing_queue = asyncio.Queue()
+        self.processing_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         
     def on_modified(self, event):
         if not event.is_directory:
@@ -452,7 +451,7 @@ class FileWatcher:
         if self._queue_task is None:
             self._queue_task = asyncio.create_task(self._process_queue())
     
-    async def add_watch_folder(self, folder_path: str, router_id: str = None):
+    async def add_watch_folder(self, folder_path: str, router_id: str | None = None):
         """Add folder to watch list and start background indexing"""
         if not os.path.exists(folder_path):
             raise ValueError(f"Folder does not exist: {folder_path}")

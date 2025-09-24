@@ -14,7 +14,7 @@ class DocumentProcessor:
         """Check if file format is supported"""
         return os.path.splitext(file_path)[1].lower() in self.supported_formats
     
-    def process_document(self, file_path: str, router_id: str = None) -> List[Dict]:
+    def process_document(self, file_path: str, router_id: str | None = None) -> List[Dict]:
         """Process document and return chunks with metadata"""
         if not self.is_supported(file_path):
             return []
@@ -31,7 +31,7 @@ class DocumentProcessor:
             print(f"Error processing {file_path}: {e}")
             return []
     
-    def _chunk_document(self, doc_result, file_path: str, router_id: str = None) -> List[Dict]:
+    def _chunk_document(self, doc_result, file_path: str, router_id: str | None = None) -> List[Dict]:
         """Chunk document into smaller pieces with metadata"""
         chunks = []
         

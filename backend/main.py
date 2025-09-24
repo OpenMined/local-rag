@@ -173,7 +173,7 @@ def format_file_size(bytes_size: int) -> str:
 # Pydantic models
 class FolderRequest(BaseModel):
     folder_path: str
-    router_id: Optional[str] = None  # Manual router context input
+    router_id: str  # Required router context
 
 class SearchRequest(BaseModel):
     query: str
@@ -191,7 +191,7 @@ class FileStructureRequest(BaseModel):
 class CheckboxUpdate(BaseModel):
     paths: List[str]
     checked: bool
-    router_id: Optional[str] = None  # Router context for document tagging
+    router_id: str  # Required router context for document tagging
 
 @app.get("/", response_class=HTMLResponse)
 async def root():

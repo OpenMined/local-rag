@@ -197,7 +197,7 @@ class GlobalIndexingManager:
             self._log_activity(f"Parsing document {os.path.basename(file_path)} (this may take a while for large files)...", "processing")
             
             # Get router_id for this specific file
-            router_id = self.file_watcher.get_router_id_for_file(file_path) if self.file_watcher else "default-router"
+            router_id = self.file_watcher.get_router_id_for_file(file_path)
             chunks = await asyncio.to_thread(self.doc_processor.process_document, file_path, router_id)
             
             if not chunks:
@@ -372,7 +372,7 @@ class FileWatcher:
         # Load persistent configuration from vector store
         self.watched_folders: Set[str] = self.vector_store.load_watched_folders()
         self.watched_files: Set[str] = self.vector_store.load_watched_files()
-        # NEW: Store folder→router_id mapping
+        # Store folder→router_id mapping
         self.folder_router_mapping: Dict[str, str] = self._load_folder_router_mapping()
         self.watched_directories: Set[str] = set()  # Track directories being watched by observer
         
@@ -544,6 +544,10 @@ class FileWatcher:
         if path in self.watched_folders:
             self.watched_folders.remove(path)
             self._persist_watched_folders()  # Persist immediately
+            # Remove router mapping for this folder
+            if path in self.folder_router_mapping:
+                del self.folder_router_mapping[path]
+                self._save_folder_router_mapping()
             # Remove documents from this folder (async)
             await asyncio.to_thread(self.vector_store.delete_by_file_prefix, path)
             self.indexing_manager._log_activity(f"Removed folder from watch list: {path}", "success")
@@ -629,12 +633,16 @@ class FileWatcher:
     
     def get_router_id_for_file(self, file_path: str) -> str:
         """Get router_id for a file based on its parent folder mapping"""
-        # Find the matching folder for this file
+        # Check for folder-level router_id mapping
         for folder_path, router_id in self.folder_router_mapping.items():
             if file_path.startswith(folder_path + "/") or file_path.startswith(folder_path + os.sep):
                 return router_id
-        # Fallback to default if no mapping found
-        return "default-router"
+        
+        # No fallback - all files must have explicit router_id via folder mapping
+        raise ValueError(
+            f"No router_id mapping found for file: {file_path}. "
+            f"Files must be added through API endpoints with explicit router_id."
+        )
     
     def get_indexing_status(self) -> Dict[str, Any]:
         """Get current global indexing status"""

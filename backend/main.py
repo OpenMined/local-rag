@@ -119,7 +119,7 @@ def build_file_tree(path: str, expand_folders: bool = True, max_depth: int = 3, 
                     size_info = format_file_size(size_bytes)
                 
                 # Create item object
-                item = {
+                item: Dict[str, Any] = {
                     "name": item_name,
                     "path": item_path,
                     "type": "folder" if is_dir else "file",
@@ -173,9 +173,11 @@ def format_file_size(bytes_size: int) -> str:
 # Pydantic models
 class FolderRequest(BaseModel):
     folder_path: str
+    router_id: str  # Required router context
 
 class SearchRequest(BaseModel):
     query: str
+    router_id: str 
     limit: int = Config.DEFAULT_SEARCH_LIMIT
 
 class SearchPathsRequest(BaseModel):
@@ -189,6 +191,7 @@ class FileStructureRequest(BaseModel):
 class CheckboxUpdate(BaseModel):
     paths: List[str]
     checked: bool
+    router_id: str  # Required router context for document tagging
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -203,7 +206,7 @@ async def root():
 async def add_folder(request: FolderRequest):
     """Add a folder to be watched and indexed"""
     try:
-        await file_watcher.add_watch_folder(request.folder_path)
+        await file_watcher.add_watch_folder(request.folder_path, request.router_id)
         return {"status": "success", "message": f"Added {request.folder_path} to watch list"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -217,6 +220,13 @@ async def get_watched_folders():
 async def search_documents(request: SearchRequest):
     """Search for similar documents"""
     try:
+        # Check if router_id is provided
+        if not request.router_id or request.router_id == '':
+            raise HTTPException(
+                status_code=400,
+                detail="router_id is required and can't be empty. Please specify a router context for the search."
+            )
+        
         # Generate query embedding
         query_embedding = embedding_gen.embed_text(request.query)
         
@@ -224,7 +234,8 @@ async def search_documents(request: SearchRequest):
         results = vector_store.search(
             query_embedding=query_embedding,
             n_results=request.limit,
-            include=["documents", "metadatas", "distances"]
+            include=["documents", "metadatas", "distances"],
+            router_id=request.router_id
         )
         
         return {
@@ -241,7 +252,7 @@ async def search_document_paths(request: SearchPathsRequest):
         # Generate query embedding
         query_embedding = embedding_gen.embed_text(request.query)
         
-        # Search vector store
+        # Search vector store (no router_id for path search - returns all)
         results = vector_store.search(
             query_embedding=query_embedding,
             n_results=request.limit,
@@ -281,7 +292,7 @@ async def remove_watched_folder(folder_path: str):
     """Remove a folder from the watch list"""
     try:
         # Use the FileWatcher's remove method which handles persistence
-        file_watcher.remove_watch_path(folder_path)
+        await file_watcher.remove_watch_path(folder_path)
         return {"status": "success", "message": f"Removed {folder_path} from watch list"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -335,7 +346,7 @@ async def update_folder_selection(request: CheckboxUpdate):
             # Add folders and files to watch list
             for path in valid_paths:
                 if os.path.isdir(path):
-                    await file_watcher.add_watch_folder(path)
+                    await file_watcher.add_watch_folder(path, request.router_id)
                 elif os.path.isfile(path) and doc_processor.is_supported(path):
                     await file_watcher.add_watch_file(path)
         else:
@@ -353,7 +364,7 @@ async def update_folder_selection(request: CheckboxUpdate):
 
 def format_search_results(results):
     """Format search results for frontend"""
-    formatted = []
+    formatted: List[Dict[str, Any]] = []
     if not results['documents'] or not results['documents'][0]:
         return formatted
         

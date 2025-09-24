@@ -2,7 +2,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import os
 import asyncio
-from typing import Set, List, Dict, Any
+from typing import Set, List, Dict, Any, Optional
 from datetime import datetime
 from .config import Config
 import uuid
@@ -19,12 +19,12 @@ class IndexingOperation:
         self.total_size_mb = sum(size for _, size in files)
         self.processed_size_mb = 0
         self.status = "pending"  # pending, active, completed, error
-        self.current_file = None
+        self.current_file: Optional[str] = None
         self.current_file_progress = 0.0  # Progress of current file (0.0 to 1.0)
         self.current_file_chunks_total = 0
         self.current_file_chunks_processed = 0
-        self.start_time = None
-        self.end_time = None
+        self.start_time: Optional[datetime] = None
+        self.end_time: Optional[datetime] = None
         
     def get_overall_progress(self) -> float:
         """Get overall progress as percentage (0.0 to 1.0)"""
@@ -50,18 +50,18 @@ class IndexingOperation:
         self.current_file_progress = 0.0
         self.current_file_chunks_total = 0
         self.current_file_chunks_processed = 0
-        self.current_file = None
 
 class GlobalIndexingManager:
     """Manages all indexing operations globally"""
-    def __init__(self, vector_store, doc_processor, embedding_gen):
+    def __init__(self, vector_store, doc_processor, embedding_gen, file_watcher=None):
         self.vector_store = vector_store
         self.doc_processor = doc_processor
         self.embedding_gen = embedding_gen
+        self.file_watcher = file_watcher
         self.operations: Dict[str, IndexingOperation] = {}
-        self.operation_queue = asyncio.Queue()
+        self.operation_queue: asyncio.Queue[str] = asyncio.Queue()
         self.is_processing = False
-        self.global_status = {
+        self.global_status: Dict[str, Any] = {
             "isRunning": False,
             "operations": [],
             "totalOperations": 0,
@@ -194,7 +194,10 @@ class GlobalIndexingManager:
             
             # Process document - this is the major bottleneck
             self._log_activity(f"Parsing document {os.path.basename(file_path)} (this may take a while for large files)...", "processing")
-            chunks = await asyncio.to_thread(self.doc_processor.process_document, file_path)
+            
+            # Get router_id for this specific file
+            router_id = self.file_watcher.get_router_id_for_file(file_path)
+            chunks = await asyncio.to_thread(self.doc_processor.process_document, file_path, router_id)
             
             if not chunks:
                 self._log_activity(f"No content extracted from {os.path.basename(file_path)}", "warning")
@@ -256,7 +259,7 @@ class GlobalIndexingManager:
         
         # Get current file info for display
         current_file = None
-        current_file_progress = 0
+        current_file_progress = 0.0
         current_file_chunks = {"processed": 0, "total": 0}
         
         for op in active_ops:
@@ -322,7 +325,7 @@ class GlobalIndexingManager:
     def cleanup_completed_operations(self, max_age_hours: int = 24):
         """Clean up old completed operations"""
         cutoff_time = datetime.now().timestamp() - (max_age_hours * 3600)
-        to_remove = []
+        to_remove: List[str] = []
         
         for op_id, operation in self.operations.items():
             if (operation.status in ["completed", "error"] and 
@@ -341,7 +344,7 @@ class DocumentFileHandler(FileSystemEventHandler):
         self.vector_store = vector_store
         self.doc_processor = doc_processor
         self.embedding_gen = embedding_gen
-        self.processing_queue = asyncio.Queue()
+        self.processing_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         
     def on_modified(self, event):
         if not event.is_directory:
@@ -368,14 +371,16 @@ class FileWatcher:
         # Load persistent configuration from vector store
         self.watched_folders: Set[str] = self.vector_store.load_watched_folders()
         self.watched_files: Set[str] = self.vector_store.load_watched_files()
+        # Store folder→router_id mapping
+        self.folder_router_mapping: Dict[str, str] = self._load_folder_router_mapping()
         self.watched_directories: Set[str] = set()  # Track directories being watched by observer
         
         self.observer = Observer()
         self.handler = DocumentFileHandler(vector_store, doc_processor, embedding_gen)
         self._queue_task = None
         
-        # Initialize global indexing manager
-        self.indexing_manager = GlobalIndexingManager(vector_store, doc_processor, embedding_gen)
+        # Initialize global indexing manager (pass self reference after initialization)
+        self.indexing_manager = GlobalIndexingManager(vector_store, doc_processor, embedding_gen, self)
         
         # Load initial logs from persistent storage (if any)
         persistent_status = self.vector_store.load_indexing_status()
@@ -446,7 +451,7 @@ class FileWatcher:
         if self._queue_task is None:
             self._queue_task = asyncio.create_task(self._process_queue())
     
-    async def add_watch_folder(self, folder_path: str):
+    async def add_watch_folder(self, folder_path: str, router_id: str | None = None):
         """Add folder to watch list and start background indexing"""
         if not os.path.exists(folder_path):
             raise ValueError(f"Folder does not exist: {folder_path}")
@@ -456,6 +461,11 @@ class FileWatcher:
         
         self.watched_folders.add(folder_path)
         self._persist_watched_folders()  # Persist immediately
+        
+        # Store folder→router_id mapping
+        if router_id:
+            self.folder_router_mapping[folder_path] = router_id
+            self._save_folder_router_mapping()
         
         # Only add directory watch if not already watching
         if folder_path not in self.watched_directories:
@@ -533,6 +543,10 @@ class FileWatcher:
         if path in self.watched_folders:
             self.watched_folders.remove(path)
             self._persist_watched_folders()  # Persist immediately
+            # Remove router mapping for this folder
+            if path in self.folder_router_mapping:
+                del self.folder_router_mapping[path]
+                self._save_folder_router_mapping()
             # Remove documents from this folder (async)
             await asyncio.to_thread(self.vector_store.delete_by_file_prefix, path)
             self.indexing_manager._log_activity(f"Removed folder from watch list: {path}", "success")
@@ -582,6 +596,60 @@ class FileWatcher:
     def get_watched_folders(self) -> List[str]:
         """Get all watched paths (folders and files)"""
         return list(self.watched_folders) + list(self.watched_files)
+    
+    def _load_folder_router_mapping(self) -> Dict[str, str]:
+        """Load folder→router_id mapping from persistent storage"""
+        try:
+            results = self.vector_store.config_collection.get(
+                where={"type": "folder_router_mapping"}
+            )
+            if results['documents']:
+                import json
+                return json.loads(results['documents'][0])
+        except Exception as e:
+            print(f"Error loading folder router mapping: {e}")
+        return {}
+    
+    def _save_folder_router_mapping(self):
+        """Save folder→router_id mapping to persistent storage"""
+        try:
+            import json
+            # Delete existing mapping
+            existing = self.vector_store.config_collection.get(
+                where={"type": "folder_router_mapping"}
+            )
+            if existing['ids']:
+                self.vector_store.config_collection.delete(ids=existing['ids'])
+            
+            # Add new mapping
+            self.vector_store.config_collection.add(
+                ids=["folder_router_mapping"],
+                documents=[json.dumps(self.folder_router_mapping)],
+                metadatas=[{"type": "folder_router_mapping", "version": "1.0"}]
+            )
+        except Exception as e:
+            print(f"Error saving folder router mapping: {e}")
+    
+    def get_router_id_for_file(self, file_path: str) -> str:
+        """Get router_id for a file based on its parent folder mapping"""
+        # Check for folder-level router_id mapping
+        file_path_norm = os.path.normpath(file_path)
+        for folder_path, router_id in self.folder_router_mapping.items():
+            folder_path_norm = os.path.normpath(folder_path)
+            # Check if file_path is inside folder_path
+            try:
+                common = os.path.commonpath([file_path_norm, folder_path_norm])
+                if common == folder_path_norm:
+                    return router_id
+            except ValueError:
+                # If paths are on different drives (Windows), skip
+                continue
+        
+        # No fallback - all files must have explicit router_id via folder mapping
+        raise ValueError(
+            f"No router_id mapping found for file: {file_path}. "
+            f"Files must be added through API endpoints with explicit router_id."
+        )
     
     def get_indexing_status(self) -> Dict[str, Any]:
         """Get current global indexing status"""

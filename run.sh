@@ -19,7 +19,7 @@ cleanup_and_exit() {
 
 # Function to start the application
 start_application() {
-    local port=${SYFTBOX_ASSIGNED_PORT:-9000}
+    local port=38443
     
     echo "Starting application on port $port..."
     
@@ -34,6 +34,7 @@ start_application() {
     rm -rf .venv
     uv venv -p 3.12 .venv
     uv pip install -r requirements.txt
+    uv pip install rapidocr easyocr onnxruntime
     uv run uvicorn backend.main:app --host 0.0.0.0 --port $port --workers 1
     
     # If we reach this point, uvicorn has stopped

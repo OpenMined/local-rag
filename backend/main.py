@@ -31,6 +31,7 @@ from .embeddings import EmbeddingGenerator
 from .vector_store import VectorStore
 from .file_watcher import FileWatcher
 from .config import Config
+from loguru import logger
 
 # Ensure directories exist
 Config.ensure_directories()
@@ -119,7 +120,7 @@ def build_file_tree(path: str, expand_folders: bool = True, max_depth: int = 3, 
                     size_info = format_file_size(size_bytes)
                 
                 # Create item object
-                item = {
+                item: Dict[str, Any] = {
                     "name": item_name,
                     "path": item_path,
                     "type": "folder" if is_dir else "file",
@@ -173,10 +174,13 @@ def format_file_size(bytes_size: int) -> str:
 # Pydantic models
 class FolderRequest(BaseModel):
     folder_path: str
+    router_id: str  # Required router context
 
 class SearchRequest(BaseModel):
     query: str
+    router_id: str
     limit: int = Config.DEFAULT_SEARCH_LIMIT
+    include_embeddings: bool = True
 
 class SearchPathsRequest(BaseModel):
     query: str
@@ -189,6 +193,7 @@ class FileStructureRequest(BaseModel):
 class CheckboxUpdate(BaseModel):
     paths: List[str]
     checked: bool
+    router_id: str  # Required router context for document tagging
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -203,7 +208,7 @@ async def root():
 async def add_folder(request: FolderRequest):
     """Add a folder to be watched and indexed"""
     try:
-        await file_watcher.add_watch_folder(request.folder_path)
+        await file_watcher.add_watch_folder(request.folder_path, request.router_id)
         return {"status": "success", "message": f"Added {request.folder_path} to watch list"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -215,22 +220,107 @@ async def get_watched_folders():
 
 @app.post("/api/search")
 async def search_documents(request: SearchRequest):
-    """Search for similar documents"""
+    """Search for similar documents with extended embedding information"""
     try:
+        # Check if router_id is provided
+        if not request.router_id or request.router_id == '':
+            raise HTTPException(
+                status_code=400,
+                detail="router_id is required and can't be empty. Please specify a router context for the search."
+            )
+        
+        # Determine if embeddings should be included
+        include_embeddings = getattr(request, 'include_embeddings', True)
+        
         # Generate query embedding
         query_embedding = embedding_gen.embed_text(request.query)
+        
+        # Convert query_embedding (which is a single NumPy array) to a Python list
+        query_embedding_list = None
+        if include_embeddings and query_embedding is not None:
+            if hasattr(query_embedding, 'tolist'):
+                query_embedding_list = query_embedding.tolist()
+            else:
+                query_embedding_list = query_embedding # Assume it's already a list if it lacks .tolist()
+        
+        # Build include list
+        include_list = ["documents", "metadatas", "distances"]
+        if include_embeddings:
+            include_list.append("embeddings")
         
         # Search vector store
         results = vector_store.search(
             query_embedding=query_embedding,
             n_results=request.limit,
-            include=["documents", "metadatas", "distances"]
+            include=include_list,
+            router_id=request.router_id
         )
         
-        return {
+        # Extract document embeddings if available and CONVERT TO LIST
+        document_embeddings = []
+        if results.get('embeddings') and len(results['embeddings']) > 0:
+            raw_embeddings = results['embeddings'][0]
+            # Convert numpy array to list of lists
+            if hasattr(raw_embeddings, 'tolist'):
+                document_embeddings = raw_embeddings.tolist()
+            else:
+                # Already a list
+                document_embeddings = list(raw_embeddings)
+        
+        # Format results with embeddings attached to each document
+        formatted_results = []
+        if results['documents'] and results['documents'][0]:
+            for i, (doc, metadata, distance) in enumerate(zip(
+                results['documents'][0], 
+                results['metadatas'][0], 
+                results['distances'][0]
+            )):
+                result_item = {
+                    "id": i,
+                    "content": doc,
+                    "filename": metadata.get('filename', 'Unknown'),
+                    "filepath": metadata.get('filepath', ''),
+                    "page": metadata.get('page', 0),
+                    "similarity": max(0, 1 - distance),
+                    "chunk_id": metadata.get('chunk_id', ''),
+                    "file_size": metadata.get('file_size', 0),
+                    "modified_time": metadata.get('modified_time', 0)
+                }
+                
+                # Add embedding to this specific document if available
+                if include_embeddings and i < len(document_embeddings):
+                    result_item["embedding"] = document_embeddings[i]
+                
+                formatted_results.append(result_item)
+        
+        # Build response
+        response = {
             "query": request.query,
-            "results": format_search_results(results)
+            "results": formatted_results,
+            # "sources": sources
         }
+        
+        # Add global embedding info if embeddings were requested
+        if include_embeddings:
+            response.update({
+                "queryEmbedding": query_embedding_list,
+                "documentEmbeddings": document_embeddings,
+                "embeddingModel": embedding_gen.model_name,
+                "embeddingDimension": embedding_gen.embedding_dimension,
+                "similarityMetric": vector_store.get_distance_metric()
+            })
+
+        if include_embeddings:
+            response.update({
+                "queryEmbedding": query_embedding_list,  # 🌟 FIX 2: Use the converted list
+                "documentEmbeddings": document_embeddings,
+                "embeddingModel": embedding_gen.model_name,
+                "embeddingDimension": embedding_gen.embedding_dimension,
+                "similarityMetric": vector_store.get_distance_metric()
+            })
+
+        return response
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -241,7 +331,7 @@ async def search_document_paths(request: SearchPathsRequest):
         # Generate query embedding
         query_embedding = embedding_gen.embed_text(request.query)
         
-        # Search vector store
+        # Search vector store (no router_id for path search - returns all)
         results = vector_store.search(
             query_embedding=query_embedding,
             n_results=request.limit,
@@ -281,7 +371,7 @@ async def remove_watched_folder(folder_path: str):
     """Remove a folder from the watch list"""
     try:
         # Use the FileWatcher's remove method which handles persistence
-        file_watcher.remove_watch_path(folder_path)
+        await file_watcher.remove_watch_path(folder_path)
         return {"status": "success", "message": f"Removed {folder_path} from watch list"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -335,7 +425,7 @@ async def update_folder_selection(request: CheckboxUpdate):
             # Add folders and files to watch list
             for path in valid_paths:
                 if os.path.isdir(path):
-                    await file_watcher.add_watch_folder(path)
+                    await file_watcher.add_watch_folder(path, request.router_id)
                 elif os.path.isfile(path) and doc_processor.is_supported(path):
                     await file_watcher.add_watch_file(path)
         else:
@@ -353,7 +443,7 @@ async def update_folder_selection(request: CheckboxUpdate):
 
 def format_search_results(results):
     """Format search results for frontend"""
-    formatted = []
+    formatted: List[Dict[str, Any]] = []
     if not results['documents'] or not results['documents'][0]:
         return formatted
         

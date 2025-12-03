@@ -5,7 +5,7 @@ import warnings
 from .config import Config
 
 class EmbeddingGenerator:
-    def __init__(self, model_name: str = None):
+    def __init__(self, model_name: str | None = None):
         """Initialize with a lightweight, fast model"""
         model_name = model_name or Config.EMBEDDING_MODEL
         
@@ -16,16 +16,28 @@ class EmbeddingGenerator:
         try:
             # Initialize model with CPU fallback for compatibility
             self.model = SentenceTransformer(model_name, device='cpu')
-            self.dimension = self.model.get_sentence_embedding_dimension()
+            dimension = self.model.get_sentence_embedding_dimension()
+            self.dimension = dimension if dimension is not None else 384  # Default fallback
             print(f"Initialized embedding model: {model_name} on CPU (dimension: {self.dimension})")
         except Exception as e:
             print(f"Error initializing embedding model {model_name}: {e}")
             # Fallback to a known working model
             fallback_model = "all-MiniLM-L6-v2"
             self.model = SentenceTransformer(fallback_model, device='cpu')
-            self.dimension = self.model.get_sentence_embedding_dimension()
+            dimension = self.model.get_sentence_embedding_dimension()
+            self.dimension = dimension if dimension is not None else 384  # Default fallback
             print(f"Fallback to {fallback_model} on CPU")
-    
+
+    @property
+    def model_name(self) -> str:
+        """Return the model name being used"""
+        return Config.EMBEDDING_MODEL
+
+    @property
+    def embedding_dimension(self) -> int:
+        """Return the embedding dimension"""
+        return self.dimension
+
     def embed_text(self, text: str) -> List[float]:
         """Generate embedding for text"""
         # Validate input text

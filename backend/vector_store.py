@@ -1,12 +1,13 @@
 import chromadb
 from chromadb.config import Settings
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Literal, Sequence, cast
+# ChromaDB types import
 import os
 import json
 from .config import Config
 
 class VectorStore:
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         self.db_path = db_path or Config.VECTOR_DB_PATH
         os.makedirs(self.db_path, exist_ok=True)
         
@@ -50,8 +51,13 @@ class VectorStore:
             ids=ids
         )
     
-    def search(self, query_embedding: List[float], n_results: int = None, 
-              include: List[str] = None):
+    def search(
+        self, 
+        query_embedding: List[float], 
+        n_results: int | None = None, 
+        include: List[str] | None = None, 
+        router_id: str | None = None
+    ):
         """Search for similar documents"""
         if n_results is None:
             n_results = Config.DEFAULT_SEARCH_LIMIT
@@ -60,14 +66,33 @@ class VectorStore:
         n_results = min(n_results, Config.MAX_SEARCH_LIMIT)
         
         if include is None:
-            include = ["documents", "metadatas", "distances"]
+            include = ["documents", "metadatas", "distances", "embeddings"]
+        
+        # Build where clause for router filtering
+        where_clause = None
+        if router_id:
+            where_clause = {"router_id": router_id}
+        
+        # Type cast for ChromaDB compatibility
+        include_typed = cast(List[Literal['documents', 'embeddings', 'metadatas', 'distances', 'uris', 'data']], include)
+        query_embeddings_typed = cast(List[Sequence[float]], [query_embedding])
         
         results = self.collection.query(
-            query_embeddings=[query_embedding],
+            query_embeddings=query_embeddings_typed,
             n_results=n_results,
-            include=include
+            include=include_typed,
+            where=where_clause  # type: ignore[arg-type]
         )
+        print(results)
         return results
+    
+    # Return the distance metric used by the collection
+    def get_distance_metric(self) -> str:
+        """Get the distance metric used by the collection"""
+        metadata = self.collection.metadata
+        if metadata is None:
+            return "cosine"  # Default fallback
+        return metadata.get("hnsw:space", "cosine")
     
     def delete_by_file(self, file_path: str):
         """Delete all chunks from a specific file"""
@@ -90,10 +115,12 @@ class VectorStore:
         
         # Find IDs of documents that have filepaths starting with the folder path
         ids_to_delete = []
-        for i, metadata in enumerate(all_results['metadatas']):
-            if metadata and 'filepath' in metadata:
-                if metadata['filepath'].startswith(folder_path):
-                    ids_to_delete.append(all_results['ids'][i])
+        if all_results['metadatas']:
+            for i, metadata in enumerate(all_results['metadatas']):
+                if metadata and 'filepath' in metadata:
+                    filepath = metadata['filepath']
+                    if isinstance(filepath, str) and filepath.startswith(folder_path):
+                        ids_to_delete.append(all_results['ids'][i])
         
         # Delete matching documents
         if ids_to_delete:

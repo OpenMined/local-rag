@@ -292,7 +292,17 @@ async def search_documents(request: SearchRequest):
                     result_item["embedding"] = document_embeddings[i]
                 
                 formatted_results.append(result_item)
-        
+
+        # Build sources list once, after loop completes
+        # sources = list(set(r["filepath"] for r in formatted_results))
+        # sources = [
+        #     {
+        #         "filepath": r["filepath"],
+        #         "filename": r["filename"]
+        #     }
+        #     for r in formatted_results
+        # ]
+
         # Build response
         response = {
             "query": request.query,
@@ -309,16 +319,7 @@ async def search_documents(request: SearchRequest):
                 "embeddingDimension": embedding_gen.embedding_dimension,
                 "similarityMetric": vector_store.get_distance_metric()
             })
-
-        if include_embeddings:
-            response.update({
-                "queryEmbedding": query_embedding_list,  # 🌟 FIX 2: Use the converted list
-                "documentEmbeddings": document_embeddings,
-                "embeddingModel": embedding_gen.model_name,
-                "embeddingDimension": embedding_gen.embedding_dimension,
-                "similarityMetric": vector_store.get_distance_metric()
-            })
-
+            
         return response
         
     except Exception as e:

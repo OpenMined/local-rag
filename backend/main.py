@@ -295,19 +295,19 @@ async def search_documents(request: SearchRequest):
 
         # Build sources list once, after loop completes
         # sources = list(set(r["filepath"] for r in formatted_results))
-        # sources = [
-        #     {
-        #         "filepath": r["filepath"],
-        #         "filename": r["filename"]
-        #     }
-        #     for r in formatted_results
-        # ]
+        sources = [
+            {
+                "filepath": r["filepath"],
+                "filename": r["filename"]
+            }
+            for r in formatted_results
+        ]
 
         # Build response
         response = {
             "query": request.query,
             "results": formatted_results,
-            # "sources": sources
+            "sources": sources
         }
         
         # Add global embedding info if embeddings were requested

@@ -340,23 +340,33 @@ class GlobalIndexingManager:
             self._update_global_status()
 
 class DocumentFileHandler(FileSystemEventHandler):
-    def __init__(self, vector_store, doc_processor, embedding_gen):
+    def __init__(self, vector_store, doc_processor, embedding_gen, loop=None):
         self.vector_store = vector_store
         self.doc_processor = doc_processor
         self.embedding_gen = embedding_gen
         self.processing_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self.loop = loop or asyncio.get_event_loop()
         
     def on_modified(self, event):
         if not event.is_directory:
-            asyncio.create_task(self._process_file_change(event.src_path, 'modified'))
+            asyncio.run_coroutine_threadsafe(
+                self._process_file_change(event.src_path, 'modified'),
+                self.loop
+            )
     
     def on_created(self, event):
         if not event.is_directory:
-            asyncio.create_task(self._process_file_change(event.src_path, 'created'))
+            asyncio.run_coroutine_threadsafe(
+                self._process_file_change(event.src_path, 'created'),
+                self.loop
+            )
     
     def on_deleted(self, event):
         if not event.is_directory:
-            asyncio.create_task(self._process_file_change(event.src_path, 'deleted'))
+            asyncio.run_coroutine_threadsafe(
+                self._process_file_change(event.src_path, 'deleted'),
+                self.loop
+            )
     
     async def _process_file_change(self, file_path: str, change_type: str):
         """Process file changes asynchronously"""
@@ -376,7 +386,12 @@ class FileWatcher:
         self.watched_directories: Set[str] = set()  # Track directories being watched by observer
         
         self.observer = Observer()
-        self.handler = DocumentFileHandler(vector_store, doc_processor, embedding_gen)
+        # Get the current event loop (we're in async context when FileWatcher is created)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        self.handler = DocumentFileHandler(vector_store, doc_processor, embedding_gen, loop)
         self._queue_task = None
         
         # Initialize global indexing manager (pass self reference after initialization)
